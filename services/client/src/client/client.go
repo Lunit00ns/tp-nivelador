@@ -3,6 +3,10 @@ package client
 import (
 	"net"
 	"time"
+	"bufio"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/safe_socket"
@@ -19,6 +23,9 @@ type ClientConfig struct {
 	ServerHost string
 	ServerPort string
 	AgencyId   string
+
+	InputFile  string
+	OutputFile string
 }
 
 type Client struct {
@@ -59,34 +66,74 @@ func connectToServer(host, port string) (net.Conn, error) {
 }
 
 func (client *Client) Run() error {
-	const mainAction = "test-echo-server"
+	const mainAction = "process-bet-file"
 	defer client.conn.Close()
 
-	for messageId := range ECHO_CLIENT_MESSAGE_AMOUNT {
-		messageArgs := []any{"agency-id", client.config.AgencyId, "message-id", messageId}
+	inputFile, err := os.Open(client.config.InputFile)
+	if err != nil {
+		logger.Error("open-input-file", logger.Fail, "err", err)
+		return err
+	}
+	defer inputFile.Close()
+
+	outputDir := filepath.Dir(client.config.OutputFile)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		logger.Error("create-output-dir", logger.Fail, "output-dir", outputDir, "err", err)
+		return err
+	}
+
+	outputFile, err := os.OpenFile(client.config.OutputFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		logger.Error("open-output-file", logger.Fail, "err", err)
+		return err
+	}
+	defer outputFile.Close()
+
+	scanner := bufio.NewScanner(inputFile)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		// Loggear la apuesta que se está procesando
+		messageArgs := []any{"agency-id", client.config.AgencyId, "bet", line}
 		logger.Info(mainAction, logger.InProgress, messageArgs...)
 
-		clientMessage := client.config.AgencyId
-
-		if err := safe_socket.SendAll(client.conn, []byte(clientMessage)); err != nil {
-			logger.Error("send-message", logger.Fail, messageArgs...)
+		// Enviar al servidor la apuesta leída del archivo de entrada
+		if err := safe_socket.SendAll(client.conn, []byte(line)); err != nil {
+			logger.Error("send-bet", logger.Fail, messageArgs...)
 			return err
 		}
 
+		// Recibir la respuesta del servidor
 		responseBuffer, err := safe_socket.RecvAll(client.conn, ECHO_CLIENT_BUFFER_SIZE)
 		if err != nil {
 			logger.Error("recv-response", logger.Fail, messageArgs...)
 			return err
 		}
 
-		if string(responseBuffer) != clientMessage {
-			logger.Error("check-response", logger.Fail, messageArgs...)
+		// Loggear la respuesta recibida del servidor
+		response := strings.TrimSpace(string(responseBuffer))
+		if response == "" {
+			logger.Error("empty-response", logger.Fail, messageArgs...)
+			return nil
+		}
+
+		// Escribir la respuesta en el archivo de salida
+		if _, err := outputFile.WriteString(response + "\n"); err != nil {
+			logger.Error("write-output-file", logger.Fail, append(messageArgs, "err", err)...)
 			return err
 		}
 
-		time.Sleep(ECHO_CLIENT_MESSAGE_DELAY_MS * time.Millisecond)
+		logger.Info(mainAction, logger.Success, messageArgs...)
 	}
-	logger.Info(mainAction, logger.Success, "agency-id", client.config.AgencyId)
 
+	if err := scanner.Err(); err != nil {
+		logger.Error("read-input-file", logger.Fail, "err", err)
+		return err
+	}
+
+	logger.Info(mainAction, logger.Success, "agency-id", client.config.AgencyId)
 	return nil
 }

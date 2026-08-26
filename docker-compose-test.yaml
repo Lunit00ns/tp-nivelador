@@ -12,14 +12,14 @@ services:
       - SERVER_HOST=server
       - SERVER_PORT=5678
 
-    client_1:
-      build:
-        context: ./services/client
-        dockerfile: Dockerfile
-      container_name: client_1
-      depends_on:
-        - server
-      environment:
-        - AGENCY_ID=1
-        - SERVER_HOST=server
-        - SERVER_PORT=5678
+  client_1:
+    build:
+      context: ./services/client
+      dockerfile: Dockerfile
+    container_name: client_1
+    depends_on:
+      - server
+    environment:
+      - AGENCY_ID=1
+      - SERVER_HOST=server
+      - SERVER_PORT=5678

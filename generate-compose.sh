@@ -29,21 +29,26 @@ services:
       - SERVER_PORT=5678
 EOF
 
-for i in $(seq 1 $CLIENTS); do
-  cat <<EOF >> "$OUTPUT_FILE"
+for (( i=0; i<CLIENTS; i++ )); do
+cat <<EOF >> "$OUTPUT_FILE"
 
-    client_$i:
-      build:
-        context: ./services/client
-        dockerfile: Dockerfile
-      container_name: client_$i
-      depends_on:
-        - server
-      environment:
-        - AGENCY_ID=$i
-        - SERVER_HOST=server
-        - SERVER_PORT=5678
+  client_$i:
+    build:
+      context: ./services/client
+      dockerfile: Dockerfile
+    container_name: client_$i
+    depends_on:
+      - server
+    environment:
+      - AGENCY_ID=$i
+      - SERVER_HOST=server
+      - SERVER_PORT=5678
+      - INPUT_FILE=/input/input-$i.csv
+      - OUTPUT_FILE=/output/output-$i.csv
+    volumes:
+      - ./input:/input:ro
+      - ./output:/output
 EOF
 done
 
-echo "✔  docker-compose.yaml generado exitosamente con $CLIENTS clientes"
+echo "✔  $OUTPUT_FILE generado exitosamente con $CLIENTS clientes"
