@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 
-CLIENTS=$1
+CLIENTS=$2
+OUTPUT_FILE=$1
 
-if [ -z "$CLIENTS" ]; then
-    echo "Uso: ./generate-compose.sh <cantidad_de_clientes>"
+if [ "$#" -ne 2 ]; then
+    echo "Uso: $0 <archivo_salida> <cantidad_de_clientes>"
     exit 1
 fi
 
-cat <<EOF > docker-compose.yaml
+if ! [[ "$CLIENTS" =~ ^[0-9]+$ ]]; then
+  echo "Error: la cantidad de clientes debe ser un entero ≥ 0"
+  exit 1
+fi
+
+cat <<EOF > "$OUTPUT_FILE"
+name: tp-nivelador
 services:
   server:
     build:
@@ -21,20 +28,20 @@ services:
 EOF
 
 for i in $(seq 1 $CLIENTS); do
-cat <<EOF >> docker-compose.yaml
+  cat <<EOF >> "$OUTPUT_FILE"
 
-  client_$i:
-    build:
-      context: ./services/client
-      dockerfile: Dockerfile
-    container_name: client_$i
-    depends_on:
-      - server
-    environment:
-      - AGENCY_ID=$i
-      - SERVER_HOST=server
-      - SERVER_PORT=5678
+    client_$i:
+      build:
+        context: ./services/client
+        dockerfile: Dockerfile
+      container_name: client_$i
+      depends_on:
+        - server
+      environment:
+        - AGENCY_ID=$i
+        - SERVER_HOST=server
+        - SERVER_PORT=5678
 EOF
 done
 
-echo "✔ docker-compose.yaml generado exitosamente con $CLIENTS clientes."
+echo "✔  docker-compose.yaml generado exitosamente con $CLIENTS clientes"
