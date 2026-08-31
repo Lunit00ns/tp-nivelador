@@ -100,14 +100,16 @@ func (client *Client) Run() error {
 		messageArgs := []any{"agency-id", client.config.AgencyId, "bet", line}
 		logger.Info(mainAction, logger.InProgress, messageArgs...)
 
+		msgBytes := []byte(line)
+
 		// Enviar al servidor la apuesta leída del archivo de entrada
-		if err := safe_socket.SendAll(client.conn, []byte(line)); err != nil {
+		if err := safe_socket.SendAll(client.conn, msgBytes); err != nil {
 			logger.Error("send-bet", logger.Fail, messageArgs...)
 			return err
 		}
 
-		// Recibir la respuesta del servidor
-		responseBuffer, err := safe_socket.RecvAll(client.conn, ECHO_CLIENT_BUFFER_SIZE)
+		// Recibir del servidor la misma cantidad de bytes que se enviaron
+		responseBuffer, err := safe_socket.RecvAll(client.conn, len(msgBytes))
 		if err != nil {
 			logger.Error("recv-response", logger.Fail, messageArgs...)
 			return err
@@ -117,7 +119,7 @@ func (client *Client) Run() error {
 		response := strings.TrimSpace(string(responseBuffer))
 		if response == "" {
 			logger.Error("empty-response", logger.Fail, messageArgs...)
-			return nil
+			continue
 		}
 
 		// Escribir la respuesta en el archivo de salida
@@ -133,6 +135,9 @@ func (client *Client) Run() error {
 		logger.Error("read-input-file", logger.Fail, "err", err)
 		return err
 	}
+
+	// Me aseguro que los datos se escriban en disco antes de cerrar el archivo
+	_ = outputFile.Sync()
 
 	logger.Info(mainAction, logger.Success, "agency-id", client.config.AgencyId)
 	return nil
