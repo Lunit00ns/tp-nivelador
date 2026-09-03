@@ -6,3 +6,5 @@ __pycache__/
 
 # Archivos de salida del TP
 output/
+
+.vscode/

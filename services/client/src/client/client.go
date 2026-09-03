@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -9,15 +10,13 @@ import (
 	"time"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
-	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/safe_socket"
+	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/protocol"
 )
 
-const CONNECTION_ATTEMPTS_MAX = 3
-const CONNECTION_ATTEMPS_DELAY_MS = 200
-
-const ECHO_CLIENT_BUFFER_SIZE = 512
-const ECHO_CLIENT_MESSAGE_AMOUNT = 3
-const ECHO_CLIENT_MESSAGE_DELAY_MS = 1000
+const (
+	connectionAttemptsMax    = 3
+	connectionAttemptDelayMs = 200
+)
 
 type ClientConfig struct {
 	ServerHost string
@@ -40,29 +39,25 @@ func NewClient(config ClientConfig) (*Client, error) {
 		return nil, err
 	}
 
-	client := &Client{conn: conn, config: config}
-	return client, nil
+	return &Client{conn: conn, config: config}, nil
 }
 
 func connectToServer(host, port string) (net.Conn, error) {
 	const action = "connect-to-server"
-	var err error
-	var conn net.Conn
-
 	logger.Info(action, logger.InProgress)
-	for i := range CONNECTION_ATTEMPTS_MAX {
-		conn, err = net.Dial("tcp", host+":"+port)
-		if err != nil {
-			logger.Warn(action, logger.Fail, "attempt", i)
-			time.Sleep(CONNECTION_ATTEMPS_DELAY_MS * time.Millisecond)
-			continue
+
+	for i := range connectionAttemptsMax {
+		conn, err := net.Dial("tcp", net.JoinHostPort(host, port))
+		if err == nil {
+			logger.Info(action, logger.Success)
+			return conn, nil
 		}
 
-		logger.Info(action, logger.Success)
-		break
+		logger.Warn(action, logger.Fail, "attempt", i+1, "err", err)
+		time.Sleep(connectionAttemptDelayMs * time.Millisecond)
 	}
 
-	return conn, err
+	return nil, fmt.Errorf("failed to connect to server after %d attempts", connectionAttemptsMax)
 }
 
 func (client *Client) Run() error {
@@ -89,6 +84,7 @@ func (client *Client) Run() error {
 	}
 	defer outputFile.Close()
 
+	// Leer archivo de apuestas y enviarlas al servidor
 	scanner := bufio.NewScanner(inputFile)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -96,39 +92,15 @@ func (client *Client) Run() error {
 			continue
 		}
 
-		// Loggear la apuesta que se está procesando
 		messageArgs := []any{"agency-id", client.config.AgencyId, "bet", line}
 		logger.Info(mainAction, logger.InProgress, messageArgs...)
 
-		msgBytes := []byte(line)
+		fields := strings.Split(line, ",")
 
-		// Enviar al servidor la apuesta leída del archivo de entrada
-		if err := safe_socket.SendAll(client.conn, msgBytes); err != nil {
+		if err := protocol.SendBet(client.conn, client.config.AgencyId, fields); err != nil {
 			logger.Error("send-bet", logger.Fail, messageArgs...)
 			return err
 		}
-
-		// Recibir del servidor la misma cantidad de bytes que se enviaron
-		responseBuffer, err := safe_socket.RecvAll(client.conn, len(msgBytes))
-		if err != nil {
-			logger.Error("recv-response", logger.Fail, messageArgs...)
-			return err
-		}
-
-		// Loggear la respuesta recibida del servidor
-		response := strings.TrimSpace(string(responseBuffer))
-		if response == "" {
-			logger.Error("empty-response", logger.Fail, messageArgs...)
-			continue
-		}
-
-		// Escribir la respuesta en el archivo de salida
-		if _, err := outputFile.WriteString(response + "\n"); err != nil {
-			logger.Error("write-output-file", logger.Fail, append(messageArgs, "err", err)...)
-			return err
-		}
-
-		logger.Info(mainAction, logger.Success, messageArgs...)
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -136,9 +108,37 @@ func (client *Client) Run() error {
 		return err
 	}
 
-	// Me aseguro que los datos se escriban en disco antes de cerrar el archivo
-	_ = outputFile.Sync()
+	if err := protocol.SendEnd(client.conn, client.config.AgencyId); err != nil {
+		logger.Error("send-end", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
+		return err
+	}
 
-	logger.Info(mainAction, logger.Success, "agency-id", client.config.AgencyId)
-	return nil
+	// Recibir el listado de ganadores hasta obtener DONE
+	for {
+		message, err := protocol.ReceiveMessage(client.conn)
+		if err != nil {
+			logger.Error("recv-winners", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
+			return err
+		}
+
+		switch message.Type {
+		case protocol.Winner:
+			record := strings.Join(message.Fields, ",") + "\n"
+			if _, err := outputFile.WriteString(record); err != nil {
+				logger.Error("write-output-file", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
+				return err
+			}
+
+		case protocol.Done:
+			if err := outputFile.Sync(); err != nil {
+				logger.Error("sync-output-file", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
+				return err
+			}
+			logger.Info(mainAction, logger.Success, "agency-id", client.config.AgencyId)
+			return nil
+
+		default:
+			return fmt.Errorf("unexpected response message %q", message.Type)
+		}
+	}
 }
