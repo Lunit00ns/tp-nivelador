@@ -14,16 +14,12 @@ _MESSAGE_END = 2
 _MESSAGE_WINNER = 3
 _MESSAGE_DONE = 4
 
-_FRAME_HEADER_SIZE = (
-    4  # 4 bytes para guardar un número entero de 32 bits (largo del frame)
-)
+_FRAME_HEADER_SIZE = 4  # 4 bytes para guardar el largo del frame (uint32)
 _FIELD_HEADER_SIZE = 4  # 4 bytes para guardar el largo de cada campo de texto
 _MAX_FRAME_SIZE = 1024 * 1024  # 1 MB máximo para evitar consumo excesivo de memoria
 
-# Cantidad de campos que debe traer cada tipo de mensaje.
-# El mensaje de apuesta incluye el agency_id como primer campo.
-_BET_FIELD_COUNT = 6
 _END_FIELD_COUNT = 1
+_FIELDS_PER_BET = 5  # Nombre, Apellido, DNI, Fecha de Nacimiento, Número
 
 
 class MessageType(Enum):
@@ -45,7 +41,7 @@ class BetData:
 class Message:
     type: MessageType
     agency_id: int
-    bet: BetData | None = None
+    bets: list[BetData] | None = None
 
 
 def receive_message(socket):
@@ -53,20 +49,30 @@ def receive_message(socket):
     message_type, fields = _receive_message(socket)
 
     if message_type == _MESSAGE_BET:
-        if len(fields) != _BET_FIELD_COUNT:
+        if not fields:
+            raise ValueError("bet message must contain at least agency_id field")
+
+        agency_id = int(fields[0])
+        bet_fields = fields[1:]
+
+        if len(bet_fields) % _FIELDS_PER_BET != 0 or len(bet_fields) == 0:
             raise ValueError(
-                f"bet message must contain {_BET_FIELD_COUNT} fields, got {len(fields)}"
+                f"invalid number of bet fields in batch: expected multiple of {_FIELDS_PER_BET}, got {len(bet_fields)}"
             )
 
-        bet = BetData(
-            agency_id=int(fields[0]),
-            first_name=fields[1],
-            last_name=fields[2],
-            document=int(fields[3]),
-            birthdate=fields[4],
-            number=int(fields[5]),
-        )
-        return Message(MessageType.BET, bet.agency_id, bet)
+        bets = []
+        for i in range(0, len(bet_fields), _FIELDS_PER_BET):
+            bet = BetData(
+                agency_id=agency_id,
+                first_name=bet_fields[i],
+                last_name=bet_fields[i + 1],
+                document=int(bet_fields[i + 2]),
+                birthdate=bet_fields[i + 3],
+                number=int(bet_fields[i + 4]),
+            )
+            bets.append(bet)
+
+        return Message(MessageType.BET, agency_id, bets)
 
     if message_type == _MESSAGE_END:
         if len(fields) != _END_FIELD_COUNT:
@@ -109,7 +115,7 @@ def _send_message(socket, message_type, fields):
 
         if len(field_bytes) > _MAX_FRAME_SIZE - len(payload) - _FIELD_HEADER_SIZE:
             raise ValueError(f"protocol frame exceeds {_MAX_FRAME_SIZE} bytes")
-        
+
         payload.extend(len(field_bytes).to_bytes(_FIELD_HEADER_SIZE, "big"))
         payload.extend(field_bytes)
 
@@ -123,13 +129,13 @@ def _receive_message(socket):
 
     message_type = payload[0]
     fields = []
-    offset = 1 # Salteo el primer byte que es el tipo de mensaje
+    offset = 1  # Salteo el primer byte que es el tipo de mensaje
 
     # Avanzo campo por campo leyendo primero su largo (4 bytes) y luego su valor
     while offset < len(payload):
         if len(payload) - offset < _FIELD_HEADER_SIZE:
             raise ValueError("truncated field length")
-        
+
         field_length = int.from_bytes(
             payload[offset : offset + _FIELD_HEADER_SIZE], "big"
         )
@@ -137,7 +143,7 @@ def _receive_message(socket):
 
         if field_length > len(payload) - offset:
             raise ValueError("truncated field value")
-        
+
         fields.append(payload[offset : offset + field_length].decode("utf-8"))
         offset += field_length
 
@@ -163,4 +169,3 @@ def _receive_frame(socket):
 
     # Leo exactamente la cantidad de bytes recibidos
     return safe_socket.recv_all(socket, payload_size)
-

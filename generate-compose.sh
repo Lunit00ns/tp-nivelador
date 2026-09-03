@@ -2,14 +2,20 @@
 
 CLIENTS=$2
 OUTPUT_FILE=$1
+BATCH_SIZE=${3:-100} # Valor por defecto de 100
 
-if [ "$#" -ne 2 ]; then
-    echo "Uso: $0 <archivo_salida> <cantidad_de_clientes>"
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+    echo "Uso: $0 <archivo_salida> <cantidad_de_clientes> [batch_size]"
     exit 1
 fi
 
 if ! [[ "$CLIENTS" =~ ^[0-9]+$ ]]; then
   echo "Error: la cantidad de clientes debe ser un entero ≥ 0"
+  exit 1
+fi
+
+if ! [[ "$BATCH_SIZE" =~ ^[0-9]+$ ]]; then
+  echo "Error: batch_size debe ser un entero ≥ 0"
   exit 1
 fi
 
@@ -45,10 +51,11 @@ cat <<EOF >> "$OUTPUT_FILE"
       - SERVER_PORT=5678
       - INPUT_FILE=/input/input-$i.csv
       - OUTPUT_FILE=/output/output-$i.csv
+      - BATCH_SIZE=$BATCH_SIZE
     volumes:
       - ./input:/input:ro
       - ./output:/output
 EOF
 done
 
-echo "✔  $OUTPUT_FILE generado exitosamente con $CLIENTS clientes"
+echo "✔  $OUTPUT_FILE generado exitosamente con $CLIENTS clientes y BATCH_SIZE=$BATCH_SIZE"

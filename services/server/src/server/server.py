@@ -34,29 +34,29 @@ class Server:
                             "all bets in a connection must belong to one agency"
                         )
 
-                    bet_data = message.bet
-                    bet = lottery.Bet(
-                        bet_data.agency_id,
-                        bet_data.first_name,
-                        bet_data.last_name,
-                        bet_data.document,
-                        bet_data.birthdate,
-                        bet_data.number,
-                    )
+                    bets_to_store = []
+                    for bet_data in message.bets:
+                        bet = lottery.Bet(
+                            bet_data.agency_id,
+                            bet_data.first_name,
+                            bet_data.last_name,
+                            bet_data.document,
+                            bet_data.birthdate,
+                            bet_data.number,
+                        )
+                        bets_to_store.append(bet)
 
-                    # Persistir la apuesta en el almacenamiento de la lotería
-                    self.lottery.store_bets([bet])
-                    bets_count += 1
+                    # Persistir el lote de apuestas
+                    self.lottery.store_bets(bets_to_store)
+                    bets_count += len(bets_to_store)
 
                     logger.info(
                         "process-bet",
                         logger.LogResult.success,
                         "agency",
                         bet_data.agency_id,
-                        "document",
-                        bet.document,
-                        "number",
-                        bet.number,
+                        "batch_size",
+                        len(bets_to_store),
                     )
 
                 elif message.type == protocol.MessageType.END:

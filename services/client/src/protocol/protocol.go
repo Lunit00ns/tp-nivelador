@@ -44,13 +44,24 @@ type Message struct {
 	Fields []string
 }
 
-func SendBet(writer io.Writer, agencyID string, fields []string) error {
-	if len(fields) != betFieldCount {
-		return fmt.Errorf("bet must contain %d fields, got %d", betFieldCount, len(fields))
+func SendBet(writer io.Writer, agencyID string, bets ...[]string) error {
+	if len(bets) == 0 {
+		return errors.New("cannot send an empty bet batch")
 	}
 
-	// Agrego el agencyID como el primer campo de la lista
-	return sendMessage(writer, messageBet, append([]string{agencyID}, fields...))
+	// Se aplanan todas las apuestas en un solo slice de campos:
+	// [agencyID, f1_1, f1_2..., f1_5, f2_1, f2_2..., f2_5, ...]
+	fields := make([]string, 0, 1+len(bets)*betFieldCount)
+	fields = append(fields, agencyID)
+
+	for _, bet := range bets {
+		if len(bet) != betFieldCount {
+			return fmt.Errorf("each bet in batch must contain %d fields, got %d", betFieldCount, len(bet))
+		}
+		fields = append(fields, bet...)
+	}
+
+	return sendMessage(writer, messageBet, fields)
 }
 
 func SendEnd(writer io.Writer, agencyID string) error {

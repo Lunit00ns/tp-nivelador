@@ -22,6 +22,7 @@ type ClientConfig struct {
 	ServerHost string
 	ServerPort string
 	AgencyId   string
+	BatchSize  int
 
 	InputFile  string
 	OutputFile string
@@ -84,6 +85,9 @@ func (client *Client) Run() error {
 	}
 	defer outputFile.Close()
 
+	// Acumulador de apuestas en memoria para enviar por lotes
+	batch := make([][]string, 0, client.config.BatchSize)
+
 	// Leer archivo de apuestas y enviarlas al servidor
 	scanner := bufio.NewScanner(inputFile)
 	for scanner.Scan() {
@@ -92,20 +96,30 @@ func (client *Client) Run() error {
 			continue
 		}
 
-		messageArgs := []any{"agency-id", client.config.AgencyId, "bet", line}
-		logger.Info(mainAction, logger.InProgress, messageArgs...)
-
 		fields := strings.Split(line, ",")
+		batch = append(batch, fields)
 
-		if err := protocol.SendBet(client.conn, client.config.AgencyId, fields); err != nil {
-			logger.Error("send-bet", logger.Fail, messageArgs...)
-			return err
+		// Si se llega al límite del tamaño del lote, se envía
+		if len(batch) >= client.config.BatchSize {
+			if err := protocol.SendBet(client.conn, client.config.AgencyId, batch...); err != nil {
+				logger.Error("send-bet-batch", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
+				return err
+			}
+			batch = batch[:0] // Limpia el slice manteniendo la capacidad asignada
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		logger.Error("read-input-file", logger.Fail, "err", err)
 		return err
+	}
+
+	// Enviar las apuestas que hayan quedado
+	if len(batch) > 0 {
+		if err := protocol.SendBet(client.conn, client.config.AgencyId, batch...); err != nil {
+			logger.Error("send-bet-batch", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
+			return err
+		}
 	}
 
 	if err := protocol.SendEnd(client.conn, client.config.AgencyId); err != nil {
