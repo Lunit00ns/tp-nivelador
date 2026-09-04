@@ -85,6 +85,13 @@ func (client *Client) Run() error {
 	}
 	defer outputFile.Close()
 
+	// Anunciar la agencia una única vez; a partir de acá la conexión queda
+	// asociada a este agency_id y los BET/END ya no lo transportan
+	if err := protocol.SendHello(client.conn, client.config.AgencyId); err != nil {
+		logger.Error("send-hello", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
+		return err
+	}
+
 	// Acumulador de apuestas en memoria para enviar por lotes
 	batch := make([][]string, 0, client.config.BatchSize)
 
@@ -101,7 +108,7 @@ func (client *Client) Run() error {
 
 		// Si se llega al límite del tamaño del lote, se envía
 		if len(batch) >= client.config.BatchSize {
-			if err := protocol.SendBet(client.conn, client.config.AgencyId, batch...); err != nil {
+			if err := protocol.SendBet(client.conn, batch...); err != nil {
 				logger.Error("send-bet-batch", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
 				return err
 			}
@@ -116,13 +123,13 @@ func (client *Client) Run() error {
 
 	// Enviar las apuestas que hayan quedado
 	if len(batch) > 0 {
-		if err := protocol.SendBet(client.conn, client.config.AgencyId, batch...); err != nil {
+		if err := protocol.SendBet(client.conn, batch...); err != nil {
 			logger.Error("send-bet-batch", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
 			return err
 		}
 	}
 
-	if err := protocol.SendEnd(client.conn, client.config.AgencyId); err != nil {
+	if err := protocol.SendEnd(client.conn); err != nil {
 		logger.Error("send-end", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
 		return err
 	}

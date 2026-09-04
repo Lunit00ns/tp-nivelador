@@ -9,27 +9,40 @@ import safe_socket
 #
 # ESTRUCTURA DE CADA CAMPO:
 # [4 bytes BE: largo del texto][texto codificado en UTF-8]
-_MESSAGE_BET = 1
-_MESSAGE_END = 2
-_MESSAGE_WINNER = 3
-_MESSAGE_DONE = 4
+#
+# El mensaje HELLO se recibe una única vez al inicio de la conexión con el
+# agency_id. A partir de ahí la agencia queda asociada a la conexión, por lo
+# que los mensajes BET y END ya no transportan el agency_id.
+_MESSAGE_HELLO = 1
+_MESSAGE_BET = 2
+_MESSAGE_END = 3
+_MESSAGE_WINNER = 4
+_MESSAGE_DONE = 5
 
 _FRAME_HEADER_SIZE = 4  # 4 bytes para guardar el largo del frame (uint32)
 _FIELD_HEADER_SIZE = 4  # 4 bytes para guardar el largo de cada campo de texto
 _MAX_FRAME_SIZE = 1024 * 1024  # 1 MB máximo para evitar consumo excesivo de memoria
 
-_END_FIELD_COUNT = 1
+_HELLO_FIELD_COUNT = 1
+_END_FIELD_COUNT = 0
 _FIELDS_PER_BET = 5  # Nombre, Apellido, DNI, Fecha de Nacimiento, Número
 
 
 class MessageType(Enum):
+    HELLO = _MESSAGE_HELLO
     BET = _MESSAGE_BET
     END = _MESSAGE_END
 
 
 @dataclass(frozen=True)
 class BetData:
-    agency_id: int
+    """Datos de una apuesta tal como viajan en el protocolo.
+
+    El agency_id no viaja en el mensaje BET; lo asigna el servidor a partir del
+    HELLO de la conexión. Queda como campo para reutilizar la estructura al
+    responder los ganadores (WINNER).
+    """
+
     first_name: str
     last_name: str
     document: int
@@ -40,7 +53,7 @@ class BetData:
 @dataclass(frozen=True)
 class Message:
     type: MessageType
-    agency_id: int
+    agency_id: int | None = None
     bets: list[BetData] | None = None
 
 
@@ -48,38 +61,38 @@ def receive_message(socket):
     """Lee del socket un frame completo y lo convierte en un objeto Message."""
     message_type, fields = _receive_message(socket)
 
-    if message_type == _MESSAGE_BET:
-        if not fields:
-            raise ValueError("bet message must contain at least agency_id field")
-
-        agency_id = int(fields[0])
-        bet_fields = fields[1:]
-
-        if len(bet_fields) % _FIELDS_PER_BET != 0 or len(bet_fields) == 0:
+    if message_type == _MESSAGE_HELLO:
+        if len(fields) != _HELLO_FIELD_COUNT:
             raise ValueError(
-                f"invalid number of bet fields in batch: expected multiple of {_FIELDS_PER_BET}, got {len(bet_fields)}"
+                f"hello message must contain {_HELLO_FIELD_COUNT} field, got {len(fields)}"
+            )
+        return Message(MessageType.HELLO, int(fields[0]))
+
+    if message_type == _MESSAGE_BET:
+        if len(fields) % _FIELDS_PER_BET != 0 or len(fields) == 0:
+            raise ValueError(
+                f"invalid number of bet fields in batch: expected non-zero multiple of {_FIELDS_PER_BET}, got {len(fields)}"
             )
 
         bets = []
-        for i in range(0, len(bet_fields), _FIELDS_PER_BET):
+        for i in range(0, len(fields), _FIELDS_PER_BET):
             bet = BetData(
-                agency_id=agency_id,
-                first_name=bet_fields[i],
-                last_name=bet_fields[i + 1],
-                document=int(bet_fields[i + 2]),
-                birthdate=bet_fields[i + 3],
-                number=int(bet_fields[i + 4]),
+                first_name=fields[i],
+                last_name=fields[i + 1],
+                document=int(fields[i + 2]),
+                birthdate=fields[i + 3],
+                number=int(fields[i + 4]),
             )
             bets.append(bet)
 
-        return Message(MessageType.BET, agency_id, bets)
+        return Message(MessageType.BET, bets=bets)
 
     if message_type == _MESSAGE_END:
         if len(fields) != _END_FIELD_COUNT:
             raise ValueError(
-                f"end message must contain {_END_FIELD_COUNT} field, got {len(fields)}"
+                f"end message must contain {_END_FIELD_COUNT} fields, got {len(fields)}"
             )
-        return Message(MessageType.END, int(fields[0]))
+        return Message(MessageType.END)
 
     raise ValueError(f"unexpected message type: {message_type}")
 

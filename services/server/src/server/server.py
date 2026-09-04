@@ -22,22 +22,22 @@ class Server:
         try:
             logger.info(action, logger.LogResult.in_progress)
 
+            # El primer mensaje de la conexión debe ser HELLO: anuncia la agencia
+            # a la que pertenecen todas las apuestas de esta conexión
+            hello = protocol.receive_message(client_socket)
+            if hello.type != protocol.MessageType.HELLO:
+                raise ValueError("first message in a connection must be HELLO")
+            agency_id = hello.agency_id
+
             # Recibir todas las apuestas de la agencia
             while True:
                 message = protocol.receive_message(client_socket)
 
                 if message.type == protocol.MessageType.BET:
-                    if agency_id is None:
-                        agency_id = message.agency_id
-                    elif agency_id != message.agency_id:
-                        raise ValueError(
-                            "all bets in a connection must belong to one agency"
-                        )
-
                     bets_to_store = []
                     for bet_data in message.bets:
                         bet = lottery.Bet(
-                            bet_data.agency_id,
+                            agency_id,
                             bet_data.first_name,
                             bet_data.last_name,
                             bet_data.document,
@@ -54,19 +54,18 @@ class Server:
                         "process-bet",
                         logger.LogResult.success,
                         "agency",
-                        bet_data.agency_id,
+                        agency_id,
                         "batch_size",
                         len(bets_to_store),
                     )
 
                 elif message.type == protocol.MessageType.END:
-                    if agency_id is not None and agency_id != message.agency_id:
-                        raise ValueError(
-                            "end message agency does not match received bets"
-                        )
-
-                    agency_id = message.agency_id
                     break
+
+                else:
+                    raise ValueError(
+                        f"unexpected message type after HELLO: {message.type}"
+                    )
 
             # Consultar ganadores de esta agencia y responder al cliente
             for stored_bet in self.lottery.load_bets():
@@ -74,7 +73,6 @@ class Server:
                     stored_bet
                 ):
                     winner_data = protocol.BetData(
-                        stored_bet.agency_id,
                         stored_bet.first_name,
                         stored_bet.last_name,
                         stored_bet.document,

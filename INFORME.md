@@ -32,12 +32,17 @@ Este esquema de longitud prefijada garantiza que los datos variables(como nombre
 
 ### Tipos de mensajes
 
+El `agency_id` se anuncia una única vez al inicio de la conexión mediante el mensaje **`HELLO`**. A partir de ese momento la agencia queda asociada a la conexión, por lo que los mensajes `BET` y `END` no vuelven a transportarlo (evitando redundancia en cada paquete).
+
+> **Nota:** Antes el `agency_id` se enviaba dentro de cada mensaje `BET` (y en el `END`). Como todas las apuestas de una misma conexión pertenecen siempre a la misma agencia, hacer esto resultaba redundante e ineficiente. Por eso se agregó el mensaje `HELLO` para anunciar el `agency_id` una sola vez y asociarlo a la conexión, dejando un protocolo más limpio y económico.
+
 | Tipo | Identificador | Dirección | Campos |
 | :--- | :---: | :--- | :--- |
-| **`BET`** | `0x01` | Cliente → Servidor | **Lote de apuestas.** Contiene el `agency_id` seguido de $N$ apuestas compuestas por `nombre, apellido, DNI, nacimiento, número`. |
-| **`END`** | `0x02` | Cliente → Servidor | `agency_id` |
-| **`WINNER`** | `0x03` | Servidor → Cliente | `nombre, apellido, DNI, nacimiento, número`. |
-| **`DONE`** | `0x04` | Servidor → Cliente | (sin campos) |
+| **`HELLO`** | `0x01` | Cliente → Servidor | `agency_id` (se envía una sola vez, antes de las apuestas). |
+| **`BET`** | `0x02` | Cliente → Servidor | **Lote de apuestas.** Contiene $N$ apuestas compuestas por `nombre, apellido, DNI, nacimiento, número`. |
+| **`END`** | `0x03` | Cliente → Servidor | (sin campos) |
+| **`WINNER`** | `0x04` | Servidor → Cliente | `nombre, apellido, DNI, nacimiento, número`. |
+| **`DONE`** | `0x05` | Servidor → Cliente | (sin campos) |
 
 #### Diagrama de flujo de datos
 
@@ -45,6 +50,9 @@ Este esquema de longitud prefijada garantiza que los datos variables(como nombre
 sequenceDiagram
     participant Cliente
     participant Servidor
+
+    Cliente->>Servidor: HELLO (agency_id)
+    Note over Servidor: Asocia la agencia a la conexión
 
     loop Por cada lote del archivo
         Cliente->>Servidor: BET (Lote de N apuestas)

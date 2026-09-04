@@ -16,8 +16,13 @@ import (
 //
 // ESTRUCTURA DE CADA CAMPO:
 // [4 bytes BE: largo del texto][texto codificado en UTF-8]
+//
+// El mensaje HELLO se envía una única vez al inicio de la conexión con el
+// agency_id. A partir de ahí la agencia queda asociada a la conexión, por lo
+// que los mensajes BET y END ya no transportan el agency_id.
 const (
-	messageBet byte = iota + 1
+	messageHello byte = iota + 1
+	messageBet
 	messageEnd
 	messageWinner
 	messageDone
@@ -44,15 +49,21 @@ type Message struct {
 	Fields []string
 }
 
-func SendBet(writer io.Writer, agencyID string, bets ...[]string) error {
+// Anuncia el agency_id de la conexión. Se envía una única vez,
+// antes de cualquier apuesta.
+func SendHello(writer io.Writer, agencyID string) error {
+	return sendMessage(writer, messageHello, []string{agencyID})
+}
+
+func SendBet(writer io.Writer, bets ...[]string) error {
 	if len(bets) == 0 {
 		return errors.New("cannot send an empty bet batch")
 	}
 
 	// Se aplanan todas las apuestas en un solo slice de campos:
-	// [agencyID, f1_1, f1_2..., f1_5, f2_1, f2_2..., f2_5, ...]
-	fields := make([]string, 0, 1+len(bets)*betFieldCount)
-	fields = append(fields, agencyID)
+	// [f1_1, f1_2..., f1_5, f2_1, f2_2..., f2_5, ...]
+	// El agency_id ya no viaja en cada BET: se anunció una sola vez con HELLO.
+	fields := make([]string, 0, len(bets)*betFieldCount)
 
 	for _, bet := range bets {
 		if len(bet) != betFieldCount {
@@ -64,8 +75,8 @@ func SendBet(writer io.Writer, agencyID string, bets ...[]string) error {
 	return sendMessage(writer, messageBet, fields)
 }
 
-func SendEnd(writer io.Writer, agencyID string) error {
-	return sendMessage(writer, messageEnd, []string{agencyID})
+func SendEnd(writer io.Writer) error {
+	return sendMessage(writer, messageEnd, []string{})
 }
 
 func ReceiveMessage(reader io.Reader) (Message, error) {
