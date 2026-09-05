@@ -1,16 +1,20 @@
-import os
 import sys
 
+import config
 import logger
 import server
-
-SERVER_HOST = os.environ["SERVER_HOST"]
-SERVER_PORT = int(os.environ["SERVER_PORT"])
 
 
 def main():
     logger.init()
-    s = server.Server(SERVER_HOST, SERVER_PORT)
+
+    try:
+        cfg = config.load_config()
+    except config.ConfigError as e:
+        logger.error("load-config", logger.LogResult.fail, "err", str(e))
+        return 1
+
+    s = server.Server(cfg.host, cfg.port, cfg.agency_quorum_min)
     try:
         s.run()
     except Exception as e:
