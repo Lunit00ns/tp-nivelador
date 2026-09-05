@@ -9,38 +9,29 @@ import (
 	"strings"
 	"time"
 
+	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/config"
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/protocol"
 )
 
 const (
-	connectionAttemptsMax    = 3
-	connectionAttemptDelayMs = 200
+	connectionAttemptsMax    = 5
+	connectionAttemptDelayMs = 500
 )
-
-type ClientConfig struct {
-	ServerHost string
-	ServerPort string
-	AgencyId   string
-	BatchSize  int
-
-	InputFile  string
-	OutputFile string
-}
 
 type Client struct {
 	conn   net.Conn
-	config ClientConfig
+	config config.ClientConfig
 }
 
-func NewClient(config ClientConfig) (*Client, error) {
-	conn, err := connectToServer(config.ServerHost, config.ServerPort)
+func NewClient(cfg config.ClientConfig) (*Client, error) {
+	conn, err := connectToServer(cfg.ServerHost, cfg.ServerPort)
 	if err != nil {
 		logger.Warn("connect-to-server", logger.Fail)
 		return nil, err
 	}
 
-	return &Client{conn: conn, config: config}, nil
+	return &Client{conn: conn, config: cfg}, nil
 }
 
 func connectToServer(host, port string) (net.Conn, error) {
@@ -61,10 +52,38 @@ func connectToServer(host, port string) (net.Conn, error) {
 	return nil, fmt.Errorf("failed to connect to server after %d attempts", connectionAttemptsMax)
 }
 
+// Run ejecuta el flujo completo del cliente: anuncia la agencia, envía las
+// apuestas por lotes y persiste los ganadores recibidos.
 func (client *Client) Run() error {
 	const mainAction = "process-bet-file"
 	defer client.conn.Close()
 
+	if err := protocol.SendHello(client.conn, client.config.AgencyId); err != nil {
+		logger.Error("send-hello", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
+		return err
+	}
+
+	if err := client.sendBets(); err != nil {
+		return err
+	}
+
+	outputFile, err := client.openOutputFile()
+	if err != nil {
+		return err
+	}
+	defer outputFile.Close()
+
+	if err := client.receiveWinners(outputFile); err != nil {
+		return err
+	}
+
+	logger.Info(mainAction, logger.Success, "agency-id", client.config.AgencyId)
+	return nil
+}
+
+// sendBets lee el archivo de entrada línea a línea y envía las apuestas al
+// servidor agrupadas en lotes de tamano BatchSize, seguido de un END.
+func (client *Client) sendBets() error {
 	inputFile, err := os.Open(client.config.InputFile)
 	if err != nil {
 		logger.Error("open-input-file", logger.Fail, "err", err)
@@ -72,30 +91,9 @@ func (client *Client) Run() error {
 	}
 	defer inputFile.Close()
 
-	outputDir := filepath.Dir(client.config.OutputFile)
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		logger.Error("create-output-dir", logger.Fail, "output-dir", outputDir, "err", err)
-		return err
-	}
-
-	outputFile, err := os.OpenFile(client.config.OutputFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		logger.Error("open-output-file", logger.Fail, "err", err)
-		return err
-	}
-	defer outputFile.Close()
-
-	// Anunciar la agencia una única vez; a partir de acá la conexión queda
-	// asociada a este agency_id y los BET/END ya no lo transportan
-	if err := protocol.SendHello(client.conn, client.config.AgencyId); err != nil {
-		logger.Error("send-hello", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
-		return err
-	}
-
 	// Acumulador de apuestas en memoria para enviar por lotes
 	batch := make([][]string, 0, client.config.BatchSize)
 
-	// Leer archivo de apuestas y enviarlas al servidor
 	scanner := bufio.NewScanner(inputFile)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -108,8 +106,7 @@ func (client *Client) Run() error {
 
 		// Si se llega al límite del tamaño del lote, se envía
 		if len(batch) >= client.config.BatchSize {
-			if err := protocol.SendBet(client.conn, batch...); err != nil {
-				logger.Error("send-bet-batch", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
+			if err := client.flushBatch(batch); err != nil {
 				return err
 			}
 			batch = batch[:0] // Limpia el slice manteniendo la capacidad asignada
@@ -123,8 +120,7 @@ func (client *Client) Run() error {
 
 	// Enviar las apuestas que hayan quedado
 	if len(batch) > 0 {
-		if err := protocol.SendBet(client.conn, batch...); err != nil {
-			logger.Error("send-bet-batch", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
+		if err := client.flushBatch(batch); err != nil {
 			return err
 		}
 	}
@@ -134,7 +130,34 @@ func (client *Client) Run() error {
 		return err
 	}
 
-	// Recibir el listado de ganadores hasta obtener DONE
+	return nil
+}
+
+// flushBatch envía un lote de apuestas al servidor
+func (client *Client) flushBatch(batch [][]string) error {
+	if err := protocol.SendBet(client.conn, batch...); err != nil {
+		logger.Error("send-bet-batch", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
+		return err
+	}
+	return nil
+}
+
+func (client *Client) openOutputFile() (*os.File, error) {
+	outputDir := filepath.Dir(client.config.OutputFile)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		logger.Error("create-output-dir", logger.Fail, "output-dir", outputDir, "err", err)
+		return nil, err
+	}
+
+	outputFile, err := os.OpenFile(client.config.OutputFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		logger.Error("open-output-file", logger.Fail, "err", err)
+		return nil, err
+	}
+	return outputFile, nil
+}
+
+func (client *Client) receiveWinners(outputFile *os.File) error {
 	for {
 		message, err := protocol.ReceiveMessage(client.conn)
 		if err != nil {
@@ -155,7 +178,6 @@ func (client *Client) Run() error {
 				logger.Error("sync-output-file", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
 				return err
 			}
-			logger.Info(mainAction, logger.Success, "agency-id", client.config.AgencyId)
 			return nil
 
 		default:
