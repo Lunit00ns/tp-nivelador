@@ -162,15 +162,16 @@ func sendFrame(writer io.Writer, payload []byte) error {
 		return fmt.Errorf("protocol frame exceeds %d bytes", maxFrameSize)
 	}
 
-	// Antepongo el largo del payload para que el receptor sepa cuanto leer
-	header := make([]byte, frameHeaderSize)
-	binary.BigEndian.PutUint32(header, uint32(len(payload)))
+	// Se arma el frame completo (largo + payload) en un unico buffer y se envia
+	// en una sola operacion de escritura. Asi cada frame viaja como un bloque
+	// contiguo y el tamano transferido escala de forma directa con el batch,
+	// en lugar de partir el header y el payload en escrituras (y potenciales
+	// paquetes) separadas.
+	frame := make([]byte, frameHeaderSize+len(payload))
+	binary.BigEndian.PutUint32(frame[:frameHeaderSize], uint32(len(payload)))
+	copy(frame[frameHeaderSize:], payload)
 
-	if err := safe_socket.SendAll(writer, header); err != nil {
-		return err
-	}
-
-	return safe_socket.SendAll(writer, payload)
+	return safe_socket.SendAll(writer, frame)
 }
 
 func receiveFrame(reader io.Reader) ([]byte, error) {

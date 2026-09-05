@@ -79,6 +79,16 @@ Para abstraer esta complejidad, toda la comunicación se delega en el módulo `s
 
 > El módulo `protocol` nunca llama directamente a los sockets de TCP; siempre pasa por `safe_socket`.
 
+### Algoritmo de Nagle
+
+Apenas se establece la conexión, el cliente deshabilita el algoritmo de Nagle sobre el socket TCP (`tcpConn.SetNoDelay(true)` en Go).
+
+El algoritmo de Nagle busca reducir la cantidad de segmentos pequeños en la red: retiene los datos a enviar y los acumula hasta juntar un segmento grande o hasta recibir el _ACK_ de los datos previos. Esto introduce latencia y, en nuestro caso, distorsiona la relación entre un _batch_ lógico y su transmisión: varios lotes podrían fusionarse en un mismo segmento, o un lote quedar demorado a la espera de un _ACK_.
+
+Al deshabilitarlo, cada frame (el _length-prefix_ más su payload) se entrega al sistema operativo para su envío inmediato, sin esperas. De esta forma el tamaño del paquete transmitido escala de forma directa con el `BATCH_SIZE` configurado, que es justamente el comportamiento buscado por el procesamiento por lotes del ejercicio 6.
+
+> El _framing_ con longitud prefijada del protocolo hace que deshabilitar Nagle sea seguro: el receptor delimita los mensajes por el largo anunciado, no por los límites de los segmentos TCP, así que no importa cómo la red fragmente o agrupe los bytes.
+
 ## Concurrencia y sincronización
 
 El servidor atiende a las agencias de forma **concurrente** mediante `threading`: por cada conexión aceptada se lanza un thread dedicado (`_handle_client`) que recibe las apuestas, espera el quorum y responde los ganadores. Los threads se conservan en una lista (`self._threads`) para poder unirlos ordenadamente durante el cierre. Dado que el trabajo de cada thread es fundamentalmente de I/O (sockets y disco), las limitaciones del [GIL](https://wiki.python.org/moin/GlobalInterpreterLock) no presentan un cuello de botella real.
@@ -112,3 +122,25 @@ El sorteo se resuelve con **una sola pasada** sobre el almacenamiento, disparada
 `_compute_winners` recorre las apuestas con `load_bets` de forma perezosa (línea a línea, sin cargar todo el archivo en memoria) y, aplicando `has_won`, agrupa en un diccionario `agency_id → [ganadores]` únicamente las apuestas ganadoras, que son intrínsecamente pocas. Como las agencias que forman el quorum ya terminaron de escribir antes de contar para él, sus ganadores resultan completos y deterministas.
 
 Finalmente, cada thread responde a su agencia **solo** con los ganadores que le corresponden (`_send_winners`), evitando cualquier _broadcast_: los ganadores presentes en un `OUTPUT_FILE` siempre provienen del `INPUT_FILE` de esa misma agencia.
+
+## Graceful shutdown (SIGTERM)
+
+Ambos procesos manejan la señal `SIGTERM` (y `SIGINT`) para terminar de forma ordenada, liberando todos sus recursos y saliendo con código 0 en un tiempo acotado, en cualquier etapa de la comunicación.
+
+### Servidor
+
+El manejo se apoya en un `threading.Event` (`_shutdown`) y en el cierre del socket de escucha:
+
+1. Un handler registrado con el módulo `signal` marca `_shutdown` y **cierra el socket de escucha**. Cerrar el socket hace que el `accept()` bloqueante del thread principal lance `OSError`, que se interpreta como cierre esperado (no como error) y corta el bucle de aceptación.
+2. El mismo handler hace `notify_all()` sobre la `Condition` del quorum. Así, las agencias que hubieran quedado esperando el sorteo (quorum no alcanzado) despiertan, detectan el flag de shutdown y cierran su conexión sin responder ganadores.
+3. Antes de finalizar, el thread principal hace `join()` de todos los threads de clientes en curso, garantizando que ningún recurso quede abierto al salir.
+
+Los sockets de cada cliente se cierran mediante el `with client_socket` de su thread; el socket de escucha se cierra en el handler y por el `with` de `run`.
+
+### Cliente
+
+El cliente usa `signal.NotifyContext` para derivar un `context` que se cancela ante la señal:
+
+1. Durante los reintentos de conexión, la espera entre intentos se hace con un `select` sobre `ctx.Done()` y un temporizador, de modo que la señal aborta la reconexión de inmediato en lugar de agotar los reintentos.
+2. Durante el intercambio de mensajes, una goroutine espera la cancelación del contexto y **cierra la conexión**, lo que desbloquea cualquier lectura o escritura pendiente sobre el socket. Esa goroutine se libera al finalizar `Run` mediante el cierre de un canal `done`.
+3. Como el cierre se produce por la señal, el error resultante del socket no se trata como fallo: si el contexto fue cancelado, `run` retorna código 0. Al salir por retorno (y no por `exit` abrupto), los `defer` de cierre de archivos y conexión se ejecutan normalmente.

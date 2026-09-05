@@ -167,9 +167,11 @@ def _send_frame(socket, payload):
     if len(payload) > _MAX_FRAME_SIZE:
         raise ValueError(f"protocol frame exceeds {_MAX_FRAME_SIZE} bytes")
 
-    # Antepongo 4 bytes con el tamaño total del payload para que el receptor sepa cuanto leer
-    safe_socket.send_all(socket, len(payload).to_bytes(_FRAME_HEADER_SIZE, "big"))
-    safe_socket.send_all(socket, payload)
+    # Armo el frame completo (largo + payload) y lo envio en una sola operacion,
+    # para que viaje como un bloque contiguo en lugar de partir el header y el
+    # payload en escrituras (y potenciales paquetes) separadas.
+    frame = len(payload).to_bytes(_FRAME_HEADER_SIZE, "big") + bytes(payload)
+    safe_socket.send_all(socket, frame)
 
 
 def _receive_frame(socket):

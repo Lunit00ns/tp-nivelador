@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -15,38 +16,54 @@ import (
 )
 
 const (
-	connectionAttemptsMax    = 5
+	connectionAttemptsMax    = 10
 	connectionAttemptDelayMs = 500
 )
 
 type Client struct {
+	ctx    context.Context
 	conn   net.Conn
 	config config.ClientConfig
 }
 
-func NewClient(cfg config.ClientConfig) (*Client, error) {
-	conn, err := connectToServer(cfg.ServerHost, cfg.ServerPort)
+func NewClient(ctx context.Context, cfg config.ClientConfig) (*Client, error) {
+	conn, err := connectToServer(ctx, cfg.ServerHost, cfg.ServerPort)
 	if err != nil {
 		logger.Warn("connect-to-server", logger.Fail)
 		return nil, err
 	}
 
-	return &Client{conn: conn, config: cfg}, nil
+	return &Client{ctx: ctx, conn: conn, config: cfg}, nil
 }
 
-func connectToServer(host, port string) (net.Conn, error) {
+// connectToServer intenta conectarse al servidor con reintentos. Aborta apenas
+// se cancela el contexto (señal de terminación) sin agotar los reintentos.
+func connectToServer(ctx context.Context, host, port string) (net.Conn, error) {
 	const action = "connect-to-server"
 	logger.Info(action, logger.InProgress)
 
 	for i := range connectionAttemptsMax {
 		conn, err := net.Dial("tcp", net.JoinHostPort(host, port))
 		if err == nil {
+			// Deshabilitar el algoritmo de Nagle: cada frame (lote) se envía
+			// como su propio segmento en lugar de fusionarse con otros a la
+			// espera de ACKs. Así el tamaño de paquete transmitido escala de
+			// forma directa con el tamaño del lote.
+			if tcpConn, ok := conn.(*net.TCPConn); ok {
+				tcpConn.SetNoDelay(true)
+			}
 			logger.Info(action, logger.Success)
 			return conn, nil
 		}
 
 		logger.Warn(action, logger.Fail, "attempt", i+1, "err", err)
-		time.Sleep(connectionAttemptDelayMs * time.Millisecond)
+
+		// Esperar antes de reintentar, pero cortar de inmediato ante la señal
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(connectionAttemptDelayMs * time.Millisecond):
+		}
 	}
 
 	return nil, fmt.Errorf("failed to connect to server after %d attempts", connectionAttemptsMax)
@@ -57,6 +74,13 @@ func connectToServer(host, port string) (net.Conn, error) {
 func (client *Client) Run() error {
 	const mainAction = "process-bet-file"
 	defer client.conn.Close()
+
+	// Cierra la conexión ante la señal de terminación, lo que desbloquea
+	// cualquier lectura o escritura en curso sobre el socket. El goroutine
+	// termina al finalizar Run() (via done)
+	done := make(chan struct{})
+	defer close(done)
+	go client.closeOnShutdown(done)
 
 	if err := protocol.SendHello(client.conn, client.config.AgencyId); err != nil {
 		logger.Error("send-hello", logger.Fail, "agency-id", client.config.AgencyId, "err", err)
@@ -79,6 +103,16 @@ func (client *Client) Run() error {
 
 	logger.Info(mainAction, logger.Success, "agency-id", client.config.AgencyId)
 	return nil
+}
+
+// closeOnShutdown cierra la conexión si el contexto se cancela antes de que
+// Run() termine. Si Run() termina primero, se libera al cerrarse `done`.
+func (client *Client) closeOnShutdown(done <-chan struct{}) {
+	select {
+	case <-client.ctx.Done():
+		client.conn.Close()
+	case <-done:
+	}
 }
 
 // sendBets lee el archivo de entrada línea a línea y envía las apuestas al
